@@ -21,116 +21,117 @@ router = APIRouter(
     response_model=list[BookingResponse]
 )
 def get_bookings(
+    status_filter: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
     current_user=Depends(get_current_user)
 ):
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="limit must be between 1 and 100"
+        )
+
+    if offset < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="offset must be greater than or equal to 0"
+        )
+
+    allowed_statuses = {
+        "confirmed",
+        "cancelled",
+        "checked_out",
+        "no_show"
+    }
+
+    if status_filter is not None and status_filter not in allowed_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid booking status"
+        )
 
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
 
-        if current_user["role"] == "guest":
-
-            cursor.execute(
-                """
+        query = """
+            SELECT
+                b.booking_id,
+                b.guest_id,
+                b.room_id,
+                b.check_in,
+                b.check_out,
+                b.guest_count,
+                b.status,
+                rt.price_per_night,
+                COALESCE(pay.amount_paid, 0) AS amount_paid,
+                COALESCE(
+                    pay.payment_methods,
+                    ARRAY[]::varchar[]
+                ) AS payment_methods
+            FROM booking b
+            JOIN room r
+                ON r.room_id = b.room_id
+            JOIN room_type rt
+                ON rt.room_type_id = r.room_type_id
+            LEFT JOIN (
                 SELECT
-                    b.booking_id,
-                    b.guest_id,
-                    b.room_id,
-                    b.check_in,
-                    b.check_out,
-                    b.guest_count,
-                    b.status,
-                    rt.price_per_night,
-                    COALESCE(pay.amount_paid, 0) AS amount_paid,
-                    COALESCE(pay.payment_methods, ARRAY[]::varchar[]) AS payment_methods
-                FROM booking b
-                JOIN room r
-                    ON r.room_id = b.room_id
-                JOIN room_type rt
-                    ON rt.room_type_id = r.room_type_id
-                LEFT JOIN (
-                    SELECT
-                        booking_id,
-                        SUM(amount) AS amount_paid,
-                        ARRAY_AGG(DISTINCT method::varchar) AS payment_methods
-                    FROM payment
-                    GROUP BY booking_id
-                ) pay
-                    ON pay.booking_id = b.booking_id
-                WHERE b.guest_id = %s
-                ORDER BY b.booking_id DESC;
-                """,
-                (current_user["guest_id"],)
-            )
+                    booking_id,
+                    SUM(amount) AS amount_paid,
+                    ARRAY_AGG(DISTINCT method::varchar)
+                        AS payment_methods
+                FROM payment
+                GROUP BY booking_id
+            ) pay
+                ON pay.booking_id = b.booking_id
+            WHERE 1 = 1
+        """
+
+        params = []
+
+        # ---------------------------------------------
+        # Role-based access
+        # ---------------------------------------------
+
+        if current_user["role"] == "guest":
+            query += """
+                AND b.guest_id = %s
+            """
+            params.append(current_user["guest_id"])
 
         elif current_user["role"] == "manager":
+            query += """
+                AND r.property_id = %s
+            """
+            params.append(current_user["property_id"])
 
-            cursor.execute(
-                """
-                SELECT
-                    b.booking_id,
-                    b.guest_id,
-                    b.room_id,
-                    b.check_in,
-                    b.check_out,
-                    b.guest_count,
-                    b.status,
-                    rt.price_per_night,
-                    COALESCE(pay.amount_paid, 0) AS amount_paid,
-                    COALESCE(pay.payment_methods, ARRAY[]::varchar[]) AS payment_methods
-                FROM booking b
-                JOIN room r
-                    ON r.room_id = b.room_id
-                JOIN room_type rt
-                    ON rt.room_type_id = r.room_type_id
-                LEFT JOIN (
-                    SELECT
-                        booking_id,
-                        SUM(amount) AS amount_paid,
-                        ARRAY_AGG(DISTINCT method::varchar) AS payment_methods
-                    FROM payment
-                    GROUP BY booking_id
-                ) pay
-                    ON pay.booking_id = b.booking_id
-                WHERE r.property_id = %s
-                ORDER BY b.booking_id DESC;
-                """,
-                (current_user["property_id"],)
-            )
+        # Owner sees all bookings
 
-        else:
+        # ---------------------------------------------
+        # Optional status filter
+        # ---------------------------------------------
 
-            cursor.execute(
-                """
-                SELECT
-                    b.booking_id,
-                    b.guest_id,
-                    b.room_id,
-                    b.check_in,
-                    b.check_out,
-                    b.guest_count,
-                    b.status,
-                    rt.price_per_night,
-                    COALESCE(pay.amount_paid, 0) AS amount_paid,
-                    COALESCE(pay.payment_methods, ARRAY[]::varchar[]) AS payment_methods
-                FROM booking b
-                JOIN room r
-                    ON r.room_id = b.room_id
-                JOIN room_type rt
-                    ON rt.room_type_id = r.room_type_id
-                LEFT JOIN (
-                    SELECT
-                        booking_id,
-                        SUM(amount) AS amount_paid,
-                        ARRAY_AGG(DISTINCT method::varchar) AS payment_methods
-                    FROM payment
-                    GROUP BY booking_id
-                ) pay
-                    ON pay.booking_id = b.booking_id
-                ORDER BY b.booking_id DESC;
-                """
-            )
+        if status_filter is not None:
+            query += """
+                AND b.status = %s
+            """
+            params.append(status_filter)
+
+        # ---------------------------------------------
+        # Deterministic ordering + pagination
+        # ---------------------------------------------
+
+        query += """
+            ORDER BY b.booking_id DESC
+            LIMIT %s
+            OFFSET %s;
+        """
+
+        params.extend([limit, offset])
+
+        cursor.execute(query, tuple(params))
 
         rows = cursor.fetchall()
 

@@ -10,6 +10,7 @@ from app.routers.rooms import router as rooms_router
 from app.routers.bookings import router as bookings_router
 from app.routers.payments import router as payments_router
 from app.routers.reviews import router as reviews_router
+from app.routers.availability import router as availability_router
 
 allowed_origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -36,6 +37,7 @@ app.include_router(rooms_router)
 app.include_router(bookings_router)
 app.include_router(payments_router)
 app.include_router(reviews_router)
+app.include_router(availability_router)
 
 @app.get("/")
 def root():

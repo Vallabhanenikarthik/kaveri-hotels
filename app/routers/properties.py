@@ -197,6 +197,15 @@ def update_property(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Property not found"
             )
+        # Manager can only update their own property
+        if (
+            current_user["role"] == "manager"
+            and current_user["property_id"] != property_id
+        ):
+           raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to manage this property"
+    )
 
         # Make sure at least one field was supplied
         update_data = property_data.model_dump(
@@ -280,17 +289,17 @@ def delete_property(
         require_roles("manager", "owner")
     )
 ):
-
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
 
+        # Check property exists
         cursor.execute(
             """
-            DELETE FROM property
-            WHERE property_id = %s
-            RETURNING property_id;
+            SELECT property_id
+            FROM property
+            WHERE property_id = %s;
             """,
             (property_id,)
         )
@@ -298,18 +307,35 @@ def delete_property(
         row = cursor.fetchone()
 
         if row is None:
-            connection.rollback()
-
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Property not found"
             )
+
+        # Manager can only delete their own property
+        if (
+            current_user["role"] == "manager"
+            and current_user["property_id"] != property_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to manage this property"
+            )
+
+        cursor.execute(
+            """
+            DELETE FROM property
+            WHERE property_id = %s;
+            """,
+            (property_id,)
+        )
 
         connection.commit()
 
         return None
 
     except HTTPException:
+        connection.rollback()
         raise
 
     except Exception:
